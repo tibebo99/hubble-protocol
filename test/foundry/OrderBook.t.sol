@@ -10,6 +10,7 @@ contract OrderBookTests is Utils {
 
     event OrderPlaced(address indexed trader, bytes32 indexed orderHash, IOrderBook.Order order, uint timestamp);
     event OrderCancelled(address indexed trader, bytes32 indexed orderHash, uint timestamp);
+    event SkippedCancelOrder(address indexed trader, bytes32 indexed orderHash, uint timestamp);
     event OrdersMatched(bytes32 indexed orderHash0, bytes32 indexed orderHash1, uint256 fillAmount, uint price, uint openInterestNotional, address relayer, uint timestamp);
     event LiquidationOrderMatched(address indexed trader, bytes32 indexed orderHash, uint256 fillAmount, uint price, uint openInterestNotional, address relayer, uint timestamp);
 
@@ -390,7 +391,9 @@ contract OrderBookTests is Utils {
             assertAvailableMargin(alice, 0, int(totalReservedMargin - reservedMarginForOrder1), utilizedMargin);
         }
 
-        vm.expectRevert('OB_available_margin_not_negative');
+        // vm.expectRevert('OB_available_margin_not_negative');
+        vm.expectEmit(true, true, false, true, address(orderBook));
+        emit SkippedCancelOrder(order2.trader, orderBook.getOrderHash(order2), block.timestamp);
         orderBook.cancelOrder(order2);
 
         // other users cannot cancel order
@@ -402,9 +405,12 @@ contract OrderBookTests is Utils {
         vm.startPrank(alice);
         orderBook.cancelOrder(order2);
         assertEq(marginAccount.reservedMargin(alice), 0);
+
         // cannot cancel already cancelled order
+        IOrderBook.Order[] memory _orders = new IOrderBook.Order[](1);
+        _orders[0] = order2;
         vm.expectRevert('OB_Order_does_not_exist');
-        orderBook.cancelOrder(order2);
+        orderBook.cancelOrdersNoisy(_orders);
         vm.stopPrank();
     }
 

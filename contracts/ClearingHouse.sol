@@ -27,11 +27,6 @@ contract ClearingHouse is IClearingHouse, HubbleBase {
         _;
     }
 
-    modifier onlyDefaultOrderBook() {
-        require(msg.sender == address(defaultOrderBook), "Only orderBook");
-        _;
-    }
-
     modifier onlyMySelf() {
         require(msg.sender == address(this), "Only myself");
         _;
@@ -252,7 +247,7 @@ contract ClearingHouse is IClearingHouse, HubbleBase {
         }
     }
 
-    function settleFunding() override external onlyDefaultOrderBook {
+    function settleFunding() override external whenNotPaused {
         uint numAmms = amms.length;
         uint _nextFundingTime;
         for (uint i; i < numAmms; ++i) {
@@ -275,8 +270,9 @@ contract ClearingHouse is IClearingHouse, HubbleBase {
         // nextFundingTime will be same for all amms
         if (_nextFundingTime != 0) {
             lastFundingTime = _blockTimestamp();
+            // so that distributeFunds is only called once an hour
+            IFeeSink(feeSink).distributeFunds();
         }
-        IFeeSink(feeSink).distributeFunds();
     }
 
     /* ********************* */

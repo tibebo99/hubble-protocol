@@ -174,7 +174,7 @@ contract OrderBook is IOrderBook, LimitOrderBook {
     /*  Funding Payments  */
     /* ****************** */
 
-    function settleFunding() external whenNotPaused onlyValidator {
+    function settleFunding() external {
         clearingHouse.settleFunding();
     }
 

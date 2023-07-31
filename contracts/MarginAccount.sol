@@ -88,7 +88,9 @@ contract MarginAccount is IMarginAccount, MetaHubbleBase, ReentrancyGuard {
     address public marginAccountHelper;
     IHubbleBibliophile public bibliophile;
 
-    uint256[50] private __gap;
+    mapping(address => bool) public trustedSettlers;
+
+    uint256[49] private __gap;
 
     modifier onlyClearingHouse() {
         require(_msgSender() == address(clearingHouse), "Only clearingHouse");
@@ -264,7 +266,7 @@ contract MarginAccount is IMarginAccount, MetaHubbleBase, ReentrancyGuard {
             return (IMarginAccount.LiquidationStatus.NO_DEBT, 0, 0);
         }
 
-        (uint256 notionalPosition,) = clearingHouse.getTotalNotionalPositionAndUnrealizedPnl(trader, 0, IClearingHouse.Mode.Min_Allowable_Margin); // last two arguments are irrelevent as we are checking only for zero/non-zero notional position in next step
+        (uint256 notionalPosition,) = bibliophile.getNotionalPositionAndMargin(trader, false, 0); // last two arguments are irrelevent as we are checking only for zero/non-zero notional position in next step
         if (notionalPosition != 0) { // Liquidate positions before liquidating margin account
             return (IMarginAccount.LiquidationStatus.OPEN_POSITIONS, 0, 0);
         }
@@ -373,7 +375,8 @@ contract MarginAccount is IMarginAccount, MetaHubbleBase, ReentrancyGuard {
     * @param trader Account for which the bad debt needs to be settled
     */
     function settleBadDebt(address trader) external whenNotPaused {
-        (uint256 notionalPosition,) = clearingHouse.getTotalNotionalPositionAndUnrealizedPnl(trader, 0, IClearingHouse.Mode.Min_Allowable_Margin); // last two arguments are irrelevent as we are checking only for zero/non-zero notional position in next step
+        require(_msgSender() == governance() || trustedSettlers[_msgSender()], "Not authorized");
+        (uint256 notionalPosition,) = bibliophile.getNotionalPositionAndMargin(trader, false, 0); // last two arguments are irrelevent as we are checking only for zero/non-zero notional position in next step
         require(notionalPosition == 0, "Liquidate positions before settling bad debt");
 
         // The spot value of their collateral minus their vUSD obligation is a negative value
@@ -387,9 +390,11 @@ contract MarginAccount is IMarginAccount, MetaHubbleBase, ReentrancyGuard {
         uint badDebt = (-vusdBal).toUint256();
         Collateral[] memory assets = supportedCollateral;
 
+        margin[VUSD_IDX][trader] = 0;
+
         // This pulls the obligation
         insuranceFund.seizeBadDebt(badDebt);
-        margin[VUSD_IDX][trader] = 0;
+        emit MarginAdded(trader, VUSD_IDX, badDebt, _blockTimestamp()); // will be picked up by the EVM indexer
 
         // Insurance fund gets all the available collateral
         uint[] memory seized = new uint[](assets.length);
@@ -399,6 +404,7 @@ contract MarginAccount is IMarginAccount, MetaHubbleBase, ReentrancyGuard {
                 margin[i][trader] = 0;
                 assets[i].token.safeTransfer(address(insuranceFund), amount.toUint256());
                 seized[i] = amount.toUint256();
+                emit MarginRemoved(trader, i, seized[i], _blockTimestamp()); // will be picked up by the EVM indexer
                 insuranceFund.startAuction(address(assets[i].token));
             }
         }
@@ -693,5 +699,9 @@ contract MarginAccount is IMarginAccount, MetaHubbleBase, ReentrancyGuard {
 
     function updateParams(uint _minAllowableMargin) external onlyClearingHouse {
         minAllowableMargin = _minAllowableMargin;
+    }
+
+    function toggleTrustedSettler(address _settler) external onlyGovernance {
+        trustedSettlers[_settler] = !trustedSettlers[_settler];
     }
 }

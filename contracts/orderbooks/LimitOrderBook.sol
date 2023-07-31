@@ -43,6 +43,7 @@ interface ILimitOrderBook is IOrderHandler {
 
     event OrderPlaced(address indexed trader, bytes32 indexed orderHash, Order order, uint timestamp);
     event OrderCancelled(address indexed trader, bytes32 indexed orderHash, uint timestamp);
+    event SkippedCancelOrder(address indexed trader, bytes32 indexed orderHash, uint timestamp);
 
     /**
      * @notice Place multiple orders
@@ -60,9 +61,16 @@ interface ILimitOrderBook is IOrderHandler {
     /**
      * @notice Cancel multiple orders.
      * Even a validator is allowed to cancel certain orders on the trader's behalf. This happens when there is not sufficient margin to execute the order.
-     * @dev Even if one order fails to be cancelled for whatever reason, entire tx will revert and all other orders will also fail to be cancelled.
+     * @dev If one order fails to be cancelled for whatever reason, tx will not revert and all other cancellations will be processed.
     */
     function cancelOrders(Order[] memory orders) external;
+
+    /**
+     * @notice Cancel multiple orders.
+     * Even a validator is allowed to cancel certain orders on the trader's behalf. This happens when there is not sufficient margin to execute the order.
+     * @dev Even if one order fails to be cancelled for whatever reason, entire tx will revert and all other orders will also fail to be cancelled.
+    */
+    function cancelOrdersNoisy(Order[] memory orders) external;
 
     /**
      * @notice Cancel an order
@@ -168,7 +176,7 @@ contract LimitOrderBook is ILimitOrderBook, VanillaGovernable, Pausable, EIP712U
     function placeOrders(Order[] memory orders) public whenNotPaused {
         address trader = orders[0].trader;
         address sender = _msgSender();
-        require(sender == trader || isTradingAuthority[trader][sender], "OB.no trading authority");
+        assertTradingAuthority(trader, sender);
         (int[] memory posSizes, uint[] memory upperBounds) = bibliophile.getPositionSizesAndUpperBoundsForMarkets(trader);
         uint reserveAmount;
         for (uint i = 0; i < orders.length; i++) {
@@ -178,6 +186,10 @@ contract LimitOrderBook is ILimitOrderBook, VanillaGovernable, Pausable, EIP712U
         if (reserveAmount != 0) {
             marginAccount.reserveMargin(trader, reserveAmount);
         }
+    }
+
+    function assertTradingAuthority(address trader, address sender) public view {
+        require(trader == sender || isTradingAuthority[trader][sender], "OB.no trading authority");
     }
 
     /**
@@ -235,28 +247,58 @@ contract LimitOrderBook is ILimitOrderBook, VanillaGovernable, Pausable, EIP712U
     */
     function cancelOrders(Order[] memory orders) override public {
         address trader = orders[0].trader;
+        address sender = _msgSender();
+        if (trader != sender && !isTradingAuthority[trader][sender]) {
+            require(isValidator[sender], "OB_invalid_sender");
+            return _cancelOrders(orders, true, false);
+        }
+        _cancelOrders(orders, false, false);
+    }
+
+     /**
+     * @inheritdoc ILimitOrderBook
+    */
+    function cancelOrdersNoisy(Order[] memory orders) override external {
+        assertTradingAuthority(orders[0].trader, _msgSender());
+        _cancelOrders(orders, false, true);
+    }
+
+    function _cancelOrders(Order[] memory orders, bool checkAvailableMargin, bool makeNoise) internal {
+        address trader = orders[0].trader;
+        int availableMargin;
         uint releaseMargin;
+        if (checkAvailableMargin) {
+            availableMargin = marginAccount.getAvailableMargin(trader);
+        }
+
         for (uint i; i < orders.length; i++) {
             require(orders[i].trader == trader, "OB_trader_mismatch");
-            releaseMargin += _cancelOrder(orders[i]);
+            bytes32 orderHash = getOrderHash(orders[i]);
+            if (orderInfo[orderHash].status != OrderStatus.Placed) {
+                if (makeNoise) {
+                    revert("OB_Order_does_not_exist");
+                }
+                emit SkippedCancelOrder(trader, orderHash, block.timestamp);
+                continue;
+            }
+            if (checkAvailableMargin && availableMargin >= 0) {
+                if (makeNoise) {
+                    revert("OB_available_margin_not_negative");
+                }
+                emit SkippedCancelOrder(trader, orderHash, block.timestamp);
+                continue;
+            }
+            uint release = _cancelOrder(orders[i], orderHash);
+            availableMargin += int(release);
+            releaseMargin += release;
         }
         if (releaseMargin != 0) {
             marginAccount.releaseMargin(trader, releaseMargin);
         }
     }
 
-    function _cancelOrder(Order memory order) internal returns (uint releaseMargin) {
-        bytes32 orderHash = getOrderHash(order);
-        require(orderInfo[orderHash].status == OrderStatus.Placed, "OB_Order_does_not_exist");
-
+    function _cancelOrder(Order memory order, bytes32 orderHash) internal returns (uint releaseMargin) {
         address trader = order.trader;
-        if (msg.sender != trader) {
-            require(isValidator[msg.sender], "OB_invalid_sender");
-            // allow cancellation of order by validator if availableMargin < 0
-            // there is more information in the description of the function
-            require(marginAccount.getAvailableMargin(trader) < 0, "OB_available_margin_not_negative");
-        }
-
         orderInfo[orderHash].status = OrderStatus.Cancelled;
         if (order.reduceOnly) {
             int unfilledAmount = abs(order.baseAssetQuantity - orderInfo[orderHash].filledAmount);
@@ -264,7 +306,6 @@ contract LimitOrderBook is ILimitOrderBook, VanillaGovernable, Pausable, EIP712U
         } else {
             releaseMargin = orderInfo[orderHash].reservedMargin;
         }
-
         _deleteOrderInfo(orderHash);
         emit OrderCancelled(trader, orderHash, block.timestamp);
     }
