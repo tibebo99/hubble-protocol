@@ -400,7 +400,74 @@ async function rc7Update() {
     await logStatus(tasks)
 }
 
-rc7Update()
+// 2.0.0-next.rc.8 update marginAccountHelper and deploy bridge
+async function rc8Update() {
+    // update marginAccountHelper
+    const MarginAccountHelper = await ethers.getContractFactory('MarginAccountHelper')
+    const newMAHelper = await MarginAccountHelper.deploy()
+    console.log({ newMAHelper: newMAHelper.address })
+
+    await sleep(5)
+    await initializeTxOptionsFor0thSigner()
+    const proxyAdmin = await ethers.getContractAt('ProxyAdmin', config.proxyAdmin)
+    await logStatus([proxyAdmin.upgrade(config.MarginAccountHelper, newMAHelper.address, getTxOptions())])
+
+    // deploy hgt
+    await sleep(5)
+    const l0EndpointHubble = '0x8b14D287B4150Ff22Ac73DF8BE720e933f659abc'
+    TransparentUpgradeableProxy = await ethers.getContractFactory('TransparentUpgradeableProxy')
+    hgt = await setupUpgradeableProxy(
+        'HGT',
+        config.proxyAdmin,
+        [ governance /** signer[0] */, config.MarginAccountHelper ],
+        [ l0EndpointHubble ]
+    )
+    console.log('hgt', hgt.address)
+
+    const marginAccountHelper = await ethers.getContractAt('MarginAccountHelper', config.MarginAccountHelper)
+    await logStatus([marginAccountHelper.setHGT(hgt.address, getTxOptions())])
+}
+
+// 2.0.0-next.rc.8.1 update marginAccountHelper and trusted remote in hgt
+async function rc8_1Update() {
+    // update truted remote
+    await setTrustedRemote()
+    await sleep(5)
+    // update marginAccountHelper
+    const MarginAccountHelper = await ethers.getContractFactory('MarginAccountHelper')
+    const newMAHelper = await MarginAccountHelper.deploy(getTxOptions())
+    console.log({ newMAHelper: newMAHelper.address })
+
+    await sleep(5)
+    const proxyAdmin = await ethers.getContractAt('ProxyAdmin', config.proxyAdmin)
+    await logStatus([proxyAdmin.upgrade(config.MarginAccountHelper, newMAHelper.address, getTxOptions())])
+}
+
+// 2.0.0-next.rc.8.2 update hgtRemote
+async function rc8_2Update() {
+    // update hgtRemote
+    const HGTRemote = await ethers.getContractFactory('HGTRemote')
+    const newHGTRemote = await HGTRemote.deploy(getTxOptions())
+    console.log({ newHGTRemote: newHGTRemote.address })
+
+    await sleep(5)
+    const proxyAdmin = await ethers.getContractAt('ProxyAdmin', config.fuji.ProxyAdmin)
+    await logStatus([proxyAdmin.upgrade(config.fuji.HgtRemote, newHGTRemote.address, getTxOptions())])
+}
+
+// set trusted remote on the base chain
+async function setTrustedRemote() {
+    await initializeTxOptionsFor0thSigner()
+    const hgt = await ethers.getContractAt('HGT', config.hgt)
+    const l0ChainIdFuji = 10106
+    await hgt.setTrustedRemote(
+        l0ChainIdFuji,
+        ethers.utils.solidityPack(['address', 'address'], [config.fuji.LzClient, hgt.address]),
+        getTxOptions()
+    )
+}
+
+rc8_2Update()
 .then(() => process.exit(0))
 .catch(error => {
     console.error(error);

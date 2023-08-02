@@ -17,6 +17,8 @@ const hubblev2next = {
         "vusd": "0xDDFC033DAd5F2Cc52e126B537f39eD6b70372ec6",
         "FeeSink": "0x8E3fD03Dac5A62c2991E3c09B242F9ea5f6D1E9C",
         "Forwarder": "0xF0978c72F6BfFac051735b0F01e63c55F7aE02d3",
+        "hgt": "0x019C3750080D598b84c613eB5Ed015826cBE60D5",
+        "LzEndpoint": "0x8b14D287B4150Ff22Ac73DF8BE720e933f659abc",
         "amms": [
             {
                 perp: "ETH-Perp",
@@ -83,7 +85,14 @@ const hubblev2next = {
             }
         ],
         "proxyAdmin": "0x66bd72f94C5AEA2AFDF7FAd5B23b5E6D55ff9969",
-        "governance": "0xeAA6AE79bD3d042644D91edD786E4ed3d783Ca2d"
+        "governance": "0xeAA6AE79bD3d042644D91edD786E4ed3d783Ca2d",
+        "fuji": {
+            "ProxyAdmin": "0x66bd72f94C5AEA2AFDF7FAd5B23b5E6D55ff9969",
+            "HgtRemote": "0xD61eAd1196820294D1A17c9BF109D2261B898443",
+            "StargateRouter": "0x13093E05Eb890dfA6DacecBdE51d24DabAb2Faa1",
+            "LzEndpoint": "0x93f54D755A063cE7bB9e6Ac47Eccc8e33411d706",
+            "LzClient": "0xf56D89C1E47815d440F8937355D7e276C5ED6C28",
+        }
     },
     "systemParams": {
         "maintenanceMargin": "100000",

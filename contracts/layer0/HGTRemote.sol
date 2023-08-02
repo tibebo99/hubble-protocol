@@ -2,14 +2,14 @@
 pragma solidity 0.8.9;
 
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import { Pausable } from "@openzeppelin/contracts/security/Pausable.sol";
-import { Initializable } from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
-// below imports Ownable from openzeppelin
-import { NonblockingLzApp, BytesLib } from "@layerzerolabs/solidity-examples/contracts/lzApp/NonblockingLzApp.sol";
+import { BytesLib } from "@layerzerolabs/solidity-examples/contracts/lzApp/NonblockingLzApp.sol";
+
 import { IERC20, AggregatorV3Interface, ERC20Detailed } from "../Interfaces.sol";
 import { IHGTRemote, IStargateReceiver, IStargateRouter } from "./L0Interfaces.sol";
+import { LZClient } from "./LZClient.sol";
+import { HubbleBase } from "../legos/HubbleBase.sol";
 
-contract HGTRemote is IHGTRemote, IStargateReceiver, Initializable, Pausable, NonblockingLzApp {
+contract HGTRemote is IHGTRemote, IStargateReceiver, HubbleBase {
     using BytesLib for bytes;
     using SafeERC20 for IERC20;
 
@@ -19,21 +19,14 @@ contract HGTRemote is IHGTRemote, IStargateReceiver, Initializable, Pausable, No
 
     uint8 constant TYPE_SWAP_REMOTE = 1; // stargaet router swap function type
     IStargateRouter public stargateRouter;
-    uint16 public hubbleL0ChainId; // L0 chain id
 
-    mapping(address => mapping(address => uint256)) public rescueFunds;
     mapping(address => bool) public whitelistedRelayer;
+    // failedMessages[srcChainId][srcAddress][nonce] = payloadHash
+    mapping(uint16 => mapping(bytes => mapping(uint256 => bytes32))) public failedMessages;
 
-    struct SupportedToken {
-        address token;
-        // these fields are used for multi-hop deposit/withdrawals
-        address priceFeed; // if a token has a price feed, it can be used for 2 hop transfers
-        uint collectedFee; // will accumulate because we charge L0 native fee in token being deposited
-        uint srcPoolId; // stargate pool id for token on local chain
-        uint decimals; // decimals of the token
-    }
     SupportedToken[] public supportedTokens;
     address public nativeTokenPriceFeed;
+    LZClient public lzClient;
 
     uint256[50] private __gap;
 
@@ -51,16 +44,10 @@ contract HGTRemote is IHGTRemote, IStargateReceiver, Initializable, Pausable, No
         _;
     }
 
-    /**
-     * @dev _lzEndPoint is immutable var in NonblockingLzApp
-    */
-    constructor(address _lzEndPoint) NonblockingLzApp(_lzEndPoint) {}
-
-    function initialize(address _governance, address _starGateRouter, uint16 _hubbleL0ChainId, SupportedToken calldata _usdc, address _nativeTokenPriceFeed) external initializer {
-        _transferOwnership(_governance);
+    function initialize(address _governance, address _starGateRouter, SupportedToken calldata _usdc, address _nativeTokenPriceFeed) external initializer {
+        _setGovernace(_governance);
         whitelistedRelayer[_starGateRouter] = true;
         stargateRouter = IStargateRouter(_starGateRouter);
-        hubbleL0ChainId = _hubbleL0ChainId;
         _addSupportedToken(_usdc);
         require(AggregatorV3Interface(_nativeTokenPriceFeed).decimals() == 8, "HGTRemote: Invalid price feed address");
         nativeTokenPriceFeed = _nativeTokenPriceFeed;
@@ -77,7 +64,7 @@ contract HGTRemote is IHGTRemote, IStargateReceiver, Initializable, Pausable, No
         bytes memory metadata = _validations(vars);
         address from = _msgSender();
         _debitFrom(from, vars.amount, vars.tokenIdx);
-        this.sendLzMsg(vars, metadata, msg.value);
+        _sendLzMsg(vars, metadata, msg.value);
     }
 
     function _validations(DepositVars memory vars) internal view returns (bytes memory metadata) {
@@ -102,15 +89,14 @@ contract HGTRemote is IHGTRemote, IStargateReceiver, Initializable, Pausable, No
         return abi.encode(PT_SEND, vars.to, vars.tokenIdx, vars.amount, metadata);
     }
 
-    function sendLzMsg(
+    function _sendLzMsg(
         DepositVars memory vars,
         bytes memory metadata,
         uint _nativeFee
-    ) public onlyMySelf {
+    ) internal {
         bytes memory lzPayload = _buildLzPayload(vars, metadata);
-        _lzSend(hubbleL0ChainId, lzPayload, vars.refundAddress, vars.zroPaymentAddress, vars.adapterParams, _nativeFee);
-        uint64 nonce = lzEndpoint.getOutboundNonce(hubbleL0ChainId, address(this));
-        emit SendToChain(hubbleL0ChainId, nonce, lzPayload);
+        uint64 nonce = lzClient.sendLzMsg{value: _nativeFee}(lzPayload, vars.refundAddress, vars.zroPaymentAddress, vars.adapterParams);
+        emit SendToChain(lzClient.hubbleL0ChainId(), nonce, lzPayload);
     }
 
     /**
@@ -124,57 +110,94 @@ contract HGTRemote is IHGTRemote, IStargateReceiver, Initializable, Pausable, No
     */
     function sgReceive(
         uint16 _srcChainId,
-        bytes memory /* _srcAddress */, // the remote Bridge address
-        uint nonce,
+        bytes memory _srcAddress, // the remote Bridge address
+        uint256 nonce,
         address _token, // the token contract on the local chain
         uint amountLD, // the qty of local _token contract tokens received
         bytes memory payload
     ) override external checkWhiteList {
-        DepositVars memory vars;
-        address from;
-        (
-            from, vars.to, vars.tokenIdx, vars.amount, vars.toGas, vars.isInsuranceFund,
-            vars.zroPaymentAddress, vars.adapterParams
-        ) = abi.decode(payload, (address, address, uint, uint, uint, bool, address, bytes));
+        try this.processSgReceive(_srcChainId, nonce, _token, amountLD, payload) returns (uint tokenIdx, uint l0Fee) {
+            supportedTokens[tokenIdx].collectedFee += l0Fee;
+        } catch (bytes memory _reason) { // catches generic as well as revert/require errors
+            bytes memory _payload = abi.encode(_token, amountLD, payload);
+            failedMessages[_srcChainId][_srcAddress][nonce] = keccak256(_payload);
+            emit DepositSecondHopFailure(_srcChainId, _srcAddress, nonce, _payload, _reason);
+        }
+    }
+
+    function processSgReceive(
+        uint16 _srcChainId,
+        uint nonce,
+        address _token,
+        uint amountLD,
+        bytes memory payload
+    )
+        public onlyMySelf returns (uint tokenIdx, uint l0Fee)
+    {
+        DepositVars memory vars = _decodeSgPayload(payload);
         vars.refundAddress = payable(address(this));
+        vars.amount = amountLD;
         bytes memory metadata = _validations(vars);
         require(supportedTokens[vars.tokenIdx].token == _token, "HGTRemote: token mismatch");
-        emit ReceivedFromStargate(_srcChainId, nonce, _token, amountLD, payload);
+        emit StargateDepositProcessed(_srcChainId, nonce, vars.tokenIdx, amountLD, payload);
+        return _depositToHubblenet(vars, metadata);
+    }
 
-        // The token (amountLD) is received, but we need to deduct the layer0 fee from it, which is paid in form of the native gas token
-        // this problem only arises in multihop, because in single hop, it is sent as msg.value
-
-        (int nativeTokenPrice, int tokenPrice) = _getTokenPrices(vars.tokenIdx);
-        if (tokenPrice <= 0 || nativeTokenPrice <= 0) { // some issue with the price feed, should not happen
-            return _registerDepositSecondHopFailure(_srcChainId, nonce, vars.to, _token, amountLD);
-        }
-
+    function _depositToHubblenet(DepositVars memory vars, bytes memory metadata) internal returns (uint tokenIdx, uint l0Fee) {
         // _buildLzPayload() will need to be called again because actual deposit amount will change based on L0 fee
         // but we still construct this payload on a best-effort basis because the L0 fee will vary with payload length
-        (uint nativeFee,) = lzEndpoint.estimateFees(hubbleL0ChainId, address(this), _buildLzPayload(vars, metadata), false /* _useZro */, vars.adapterParams);
-        // since amountLD is in token being transferred precision, l0Fee being charged should also be in the same precision
-        uint l0Fee = _calculateL0Fee(nativeFee, uint(nativeTokenPrice), uint(tokenPrice), vars.tokenIdx);
-        if (amountLD <= l0Fee) {
-            return _registerDepositSecondHopFailure(_srcChainId, nonce, vars.to, _token, amountLD);
-        }
-        vars.amount = amountLD - l0Fee;
+        (uint nativeFee,) = lzClient.lzEndpoint().estimateFees(lzClient.hubbleL0ChainId(), address(lzClient), _buildLzPayload(vars, metadata), false /* _useZro */, vars.adapterParams);
+
+        require(address(this).balance >= nativeFee, "HGTRemote: Insufficient native token balance");
+        l0Fee = _verifyPriceAndFee(vars.tokenIdx, nativeFee, vars.amount);
+        // The token (amountLD) is received, but we need to deduct the layer0 fee from it, which is paid in form of the native gas token
+        // this problem only arises in multihop, because in single hop, it is sent as msg.value
+        vars.amount -= l0Fee;
 
         if (vars.tokenIdx == USDC_IDX && vars.amount <= vars.toGas) {
             // if the remaining amount is less than the desired airdrop, then send the whole amount as gas airdrop
             vars.toGas = vars.amount;
             vars.isInsuranceFund = false; // redundant, but just to be sure
         }
-
-        try this.sendLzMsg(vars, metadata, nativeFee) {
-            supportedTokens[vars.tokenIdx].collectedFee += l0Fee;
-        } catch {
-            return _registerDepositSecondHopFailure(_srcChainId, nonce, vars.to, _token, amountLD);
-        }
+        _sendLzMsg(vars, metadata, nativeFee);
+        return (vars.tokenIdx, l0Fee);
     }
 
-    function _registerDepositSecondHopFailure(uint16 srcChainId, uint nonce, address to, address token, uint256 amount) internal {
-        rescueFunds[token][to] += amount;
-        emit DepositSecondHopFailure(srcChainId, nonce, to, token, amount);
+    function _decodeSgPayload(bytes memory payload) internal pure returns (DepositVars memory vars) {
+        (
+            vars.to, vars.tokenIdx, vars.amount, vars.toGas, vars.isInsuranceFund,
+            vars.zroPaymentAddress, vars.adapterParams
+        ) = abi.decode(payload, (address, uint, uint, uint, bool, address, bytes));
+    }
+
+    function retryDeposit(uint16 srcChainId,
+        bytes memory srcAddress, // the remote Bridge address
+        uint256 nonce,
+        bytes memory _payload
+    ) external {
+        (address _token, uint amountLD, bytes memory payload) = _verifyAndClearFailedMessage(srcChainId, srcAddress, nonce, _payload);
+        (uint tokenIdx, uint l0Fee) = this.processSgReceive(srcChainId, nonce, _token, amountLD, payload);
+        supportedTokens[tokenIdx].collectedFee += l0Fee;
+    }
+
+    function _verifyAndClearFailedMessage(uint16 srcChainId, bytes memory srcAddress, uint256 nonce, bytes memory _payload) internal returns (address token, uint amountLD, bytes memory payload) {
+        bytes32 payloadHash = failedMessages[srcChainId][srcAddress][nonce];
+        require(payloadHash != bytes32(0), "HGTRemote: no stored message");
+        require(keccak256(_payload) == payloadHash, "HGTRemote: invalid payload");
+        // clear the stored message
+        failedMessages[srcChainId][srcAddress][nonce] = bytes32(0);
+
+        (token, amountLD, payload) = abi.decode(_payload, (address, uint, bytes));
+    }
+
+    function rescueDepositFunds(uint16 srcChainId, bytes memory srcAddress, uint256 nonce, bytes memory _payload) external {
+        (address token, uint amountLD, bytes memory payload) = _verifyAndClearFailedMessage(srcChainId, srcAddress, nonce, _payload);
+        DepositVars memory vars = _decodeSgPayload(payload);
+        require(msg.sender == vars.to, "HGTRemote: sender must be receiver");
+        // transfer funds to the user
+        // Note that even if the token is not supported by this contract, it can still be recovered by the user
+        IERC20(token).safeTransfer(vars.to, amountLD);
+        emit FundsRescued(vars.to, srcChainId, srcAddress, nonce, vars.tokenIdx, amountLD);
     }
 
     /**
@@ -196,37 +219,37 @@ contract HGTRemote is IHGTRemote, IStargateReceiver, Initializable, Pausable, No
     /*     Withdrawals    */
     /* ****************** */
 
-    function _nonblockingLzReceive(uint16 _srcChainId, bytes memory /* _srcAddress */, uint64 nonce, bytes memory payload) internal override {
+    function nonblockingLzReceive(uint16 _srcChainId, bytes memory /* _srcAddress */, uint64 nonce, bytes memory payload) external {
+        require(msg.sender == address(lzClient), "HGTRemote: caller must be LZClient");
         (
-            uint16 packetType, address to, uint tokenIdx, uint amount, uint16 secondHopChainId, uint amountMin, uint dstPoolId
-        ) = abi.decode(payload, (uint16, address, uint, uint, uint16, uint, uint));
-        require(tokenIdx < supportedTokens.length, "HGTRemote: Invalid token index");
+            address to, uint tokenIdx, uint amount, uint16 secondHopChainId, uint amountMin, uint dstPoolId
+        ) = _decodeAndVerifyLzPayload(payload);
+        emit ReceiveFromHubbleNet(_srcChainId, to, amount, nonce);
 
-        // check for amount and user, should not happen as we have already validated it in HGT
-        require(amount != 0 && to != address(0x0), "HGTRemote: Insufficient amount or invalid user");
-
-        bool lzSendSuccess = true;
-        if (secondHopChainId != 0) {
-            // It is called while withdrawing funds from hubbleNet to anyEVMChain (other than direct bridge chain)
-            lzSendSuccess = _callSecondHop(tokenIdx, amount, to, secondHopChainId, amountMin, dstPoolId);
-            if (!lzSendSuccess) emit WithdrawSecondHopFailure(secondHopChainId, nonce, to, supportedTokens[tokenIdx].token, amount);
-        } else if (packetType == PT_SEND) {
-            _creditTo(to, tokenIdx, amount);
-        } else {
-            revert("HGTCore: unknown packet type");
+        if (secondHopChainId == 0) {
+            IERC20(supportedTokens[tokenIdx].token).safeTransfer(to, amount);
+            return;
         }
-        emit ReceiveFromHubbleNet(_srcChainId, to, amount, lzSendSuccess, nonce);
+
+        // It is called while withdrawing funds from hubbleNet to anyEVMChain (other than direct bridge chain)
+        uint l0Fee = _teleportViaStargate(tokenIdx, amount, to, secondHopChainId, amountMin, dstPoolId, address(this));
+        supportedTokens[tokenIdx].collectedFee += l0Fee;
     }
 
-    function _creditTo(address _toAddress, uint tokenIdx, uint amount) internal returns(uint) {
-        IERC20 token = IERC20(supportedTokens[tokenIdx].token);
-        token.safeTransfer(_toAddress, amount);
-        return amount;
+    function _decodeAndVerifyLzPayload(bytes memory payload) internal view returns (
+        address to, uint tokenIdx, uint amount, uint16 secondHopChainId, uint amountMin, uint dstPoolId
+    ) {
+        uint16 packetType;
+        (packetType, to, tokenIdx, amount, secondHopChainId, amountMin, dstPoolId) = abi.decode(payload, (uint16, address, uint, uint, uint16, uint, uint));
+        require(tokenIdx < supportedTokens.length, "HGTRemote: Invalid token index");
+        // check for amount and user, should not happen as we have already validated it in HGT
+        require(amount != 0 && to != address(0x0), "HGTRemote: Insufficient amount or invalid user");
+        require(packetType == PT_SEND, "HGTCore: unknown packet type");
     }
 
     struct Vars {
         uint nativeFee;
-        uint l0Fee;
+        bytes toAddress;
     }
 
     /**
@@ -234,57 +257,49 @@ contract HGTRemote is IHGTRemote, IStargateReceiver, Initializable, Pausable, No
     * @dev stargate is used to transfer funds from remote chain to anyEvmChain
     * layer0 fee is deducted from the amount transferred to send it further to anyEvmChain
     */
-    function _callSecondHop(uint tokenIdx, uint256 amount, address _to, uint16 _dstChainId, uint amountMin, uint _dstPoolId) internal returns (bool lzSendSuccess) {
-        SupportedToken memory supportedToken = supportedTokens[tokenIdx];
+    function _teleportViaStargate(uint tokenIdx, uint256 amount, address _to, uint16 _dstChainId, uint amountMin, uint _dstPoolId, address refundAddress) internal returns (uint l0Fee) {
         Vars memory vars;
-        bytes memory _toAddress = abi.encodePacked(_to);
-        {
-            try stargateRouter.quoteLayerZeroFee(_dstChainId, TYPE_SWAP_REMOTE, _toAddress, new bytes(0), IStargateRouter.lzTxObj(0, 0, "0x")) returns(uint256 _fees, uint) {
-                vars.nativeFee = _fees;
-            } catch {
-                _registerWithdrawalSecondHopFailure(_to, supportedToken.token, amount);
-                return false;
-            }
+        vars.toAddress = abi.encodePacked(_to);
+        (vars.nativeFee, ) = stargateRouter.quoteLayerZeroFee(_dstChainId, TYPE_SWAP_REMOTE, vars.toAddress, new bytes(0), IStargateRouter.lzTxObj(0, 0, "0x"));
+        l0Fee = _verifyPriceAndFee(tokenIdx, vars.nativeFee, amount);
+        amount -= l0Fee;
 
-            (int nativeTokenPrice, int tokenPrice) = _getTokenPrices(tokenIdx);
-
-            if (tokenPrice <= 0 || nativeTokenPrice <= 0) {
-                _registerWithdrawalSecondHopFailure(_to, supportedToken.token, amount);
-                return false;
-            }
-
-            vars.l0Fee = _calculateL0Fee(vars.nativeFee, uint(nativeTokenPrice), uint(tokenPrice), tokenIdx);
-            if (amount <= vars.l0Fee) {
-                _registerWithdrawalSecondHopFailure(_to, supportedToken.token, amount);
-                return false;
-            }
-            amount -= vars.l0Fee;
-        }
-
+        SupportedToken memory supportedToken = supportedTokens[tokenIdx];
         IERC20(supportedToken.token).safeApprove(address(stargateRouter), amount);
-        try stargateRouter.swap{value: vars.nativeFee}(
+        stargateRouter.swap{value: vars.nativeFee}(
             _dstChainId,
             supportedToken.srcPoolId,
             _dstPoolId,
-            payable(address(this)),
+            payable(refundAddress),
             amount,
             amountMin,
             IStargateRouter.lzTxObj(0, 0, "0x"),
-            _toAddress,
+            vars.toAddress,
             bytes("")
-        ) {
-            lzSendSuccess = true;
-            supportedTokens[tokenIdx].collectedFee += vars.l0Fee;
-        } catch {
-            // l0Fee is not charged in this case
-            _registerWithdrawalSecondHopFailure(_to, supportedToken.token, amount + vars.l0Fee);
-        }
+        );
         // resetting allowance for safety
         IERC20(supportedToken.token).safeApprove(address(stargateRouter), 0);
     }
 
-    function _registerWithdrawalSecondHopFailure(address to, address token, uint256 amount) internal {
-        rescueFunds[token][to] += amount;
+    function _verifyPriceAndFee(uint tokenIdx, uint nativeFee, uint amount) internal view returns (uint l0Fee) {
+        (int nativeTokenPrice, int tokenPrice) = _getTokenPrices(tokenIdx);
+        require(tokenPrice > 0 && nativeTokenPrice > 0, "HGTRemote: Negative Price");
+
+        // since amountLD is in token being transferred precision, l0Fee being charged should also be in the same precision
+        l0Fee = _calculateL0Fee(nativeFee, uint(nativeTokenPrice), uint(tokenPrice), tokenIdx);
+        require(amount > l0Fee, "HGTRemote: Amount less than fee");
+    }
+
+    function rescueWithdrawFunds(uint16 srcChainId, bytes memory srcAddress, uint64 nonce, bytes memory payload) external {
+        lzClient.verifyAndClearFailedMessage(srcChainId, srcAddress, nonce, payload);
+        (
+            address to, uint tokenIdx, uint amount,,,
+        ) = _decodeAndVerifyLzPayload(payload);
+        require(msg.sender == to, "HGTRemote: sender must be receiver");
+
+        // transfer funds to the user
+        IERC20(supportedTokens[tokenIdx].token).safeTransfer(to, amount);
+        emit FundsRescued(to, srcChainId, srcAddress, nonce, tokenIdx, amount);
     }
 
     /* ****************** */
@@ -293,7 +308,7 @@ contract HGTRemote is IHGTRemote, IStargateReceiver, Initializable, Pausable, No
 
     function estimateSendFee(DepositVars memory vars) public view returns (uint,uint) {
         bytes memory metadata = _validations(vars);
-        return lzEndpoint.estimateFees(hubbleL0ChainId, address(this), _buildLzPayload(vars, metadata), false /* _useZro */, vars.adapterParams);
+        return lzClient.lzEndpoint().estimateFees(lzClient.hubbleL0ChainId(), address(lzClient), _buildLzPayload(vars, metadata), false /* _useZro */, vars.adapterParams);
     }
 
     function estimateSendFeeInUSD(DepositVars memory vars) external view returns (uint) {
@@ -310,13 +325,6 @@ contract HGTRemote is IHGTRemote, IStargateReceiver, Initializable, Pausable, No
         return nativeFee * uint(latestPrice) / BASE_PRECISION;
     }
 
-    function rescueMyFunds(address token, uint256 amount) external {
-        address to = _msgSender();
-        require(rescueFunds[token][to] >= amount, "HGTRemote: Insufficient pending funds");
-        rescueFunds[token][to] -= amount;
-        IERC20(token).safeTransfer(to, amount);
-    }
-
     function feeCollected(uint tokenIdx) external view returns (uint) {
         return supportedTokens[tokenIdx].collectedFee;
     }
@@ -330,15 +338,15 @@ contract HGTRemote is IHGTRemote, IStargateReceiver, Initializable, Pausable, No
     /*     Governance     */
     /* ****************** */
 
-    function setWhitelistRelayer(address _whitelistRelayer, bool isWhiteList) external onlyOwner {
+    function setWhitelistRelayer(address _whitelistRelayer, bool isWhiteList) external onlyGovernance {
         whitelistedRelayer[_whitelistRelayer] = isWhiteList;
     }
 
-    function setStargateConfig(address _starGateRouter) external onlyOwner {
+    function setStargateConfig(address _starGateRouter) external onlyGovernance {
         stargateRouter = IStargateRouter(_starGateRouter);
     }
 
-    function addSupportedToken(SupportedToken calldata token) external onlyOwner {
+    function addSupportedToken(SupportedToken calldata token) external onlyGovernance {
         _addSupportedToken(token);
     }
 
@@ -351,6 +359,10 @@ contract HGTRemote is IHGTRemote, IStargateReceiver, Initializable, Pausable, No
         }
         token.decimals = ERC20Detailed(token.token).decimals(); // will revert if .decimals() is not defined in the contract
         supportedTokens.push(token);
+    }
+
+    function setLZClient(address _lzClient) external onlyGovernance {
+        lzClient = LZClient(_lzClient);
     }
 
     // @todo add swap function to swap usdc to native token

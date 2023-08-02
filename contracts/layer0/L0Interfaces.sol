@@ -4,13 +4,12 @@ pragma solidity 0.8.9;
 
 interface IHGTRemote {
     event SendToChain(uint16 indexed _dstChainId, uint256 indexed _nonce, bytes _lzPayload);
-    event ReceivedFromStargate(uint16 indexed srcChainId, uint256 indexed nonce, address _token, uint amountLD, bytes payload);
-    event DepositSecondHopFailure(uint16 indexed srcChainId, uint256 indexed nonce, address indexed to, address token, uint amount);
-
-    event ReceiveFromHubbleNet(uint16 indexed _dstChainId, address indexed _to, uint _amount, bool _lzSendSuccess, uint256 _nonce);
-    event WithdrawSecondHopFailure(uint16 indexed dstChainId, uint256 indexed nonce, address indexed to, address token, uint amount);
-
+    event StargateDepositProcessed(uint16 indexed srcChainId, uint256 indexed nonce, uint tokenIdx, uint amountLD, bytes payload);
+    event DepositSecondHopFailure(uint16 _srcChainId, bytes _srcAddress, uint256 _nonce, bytes _payload, bytes _reason);
+    event ReceiveFromHubbleNet(uint16 indexed _dstChainId, address indexed _to, uint _amount, uint256 _nonce);
     event DepositFees(uint256 amount, uint256 time);
+    event FundsRescued(address indexed to, uint16 _srcChainId, bytes _srcAddress, uint256 _nonce, uint tokenIdx, uint amount);
+
 
     struct DepositVars {
         address to;
@@ -22,6 +21,24 @@ interface IHGTRemote {
         address zroPaymentAddress; // the address of the ZRO token holder who would pay for the transaction (future param)
         bytes adapterParams;
     }
+
+    struct SupportedToken {
+        address token;
+        // these fields are used for multi-hop deposit/withdrawals
+        address priceFeed; // if a token has a price feed, it can be used for 2 hop transfers
+        uint collectedFee; // will accumulate because we charge L0 native fee in token being deposited
+        uint srcPoolId; // stargate pool id for token on local chain
+        uint decimals; // decimals of the token
+    }
+
+    struct StoredPayload {
+        address dstAddress;
+        uint amount;
+        uint64 payloadLength;
+        bytes32 payloadHash;
+    }
+
+    function nonblockingLzReceive(uint16 _srcChainId, bytes memory /* _srcAddress */, uint64 nonce, bytes memory payload) external;
 }
 
 interface IHGT {
@@ -117,6 +134,12 @@ interface IStargateRouter {
         bytes calldata _transferAndCallPayload,
         lzTxObj memory _lzTxParams
     ) external view returns (uint256, uint256);
+
+    function clearCachedSwap(
+        uint16 _srcChainId,
+        bytes calldata _srcAddress,
+        uint256 _nonce
+    ) external;
 }
 
 interface IStargateFactory {

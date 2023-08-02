@@ -20,15 +20,15 @@ contract HGTTests is Utils {
         setupContracts();
 
         // internal bookkeeping for endpoints (not part of a real deploy, just for this test)
-        lzEndpointBase.setDestLzEndpoint(address(hgtRemote), address(lzEndpointOther));
+        lzEndpointBase.setDestLzEndpoint(address(lzClient), address(lzEndpointOther));
         lzEndpointOther.setDestLzEndpoint(address(hgt), address(lzEndpointBase));
 
         //------  setTrustedRemote(s) -------------------------------------------------------
         // for each HGT, setTrustedRemote to allow it to receive from the remote HGT contract.
         // Note: This is sometimes referred to as the "wire-up" process.
         vm.startPrank(governance);
-        hgt.setTrustedRemote(otherChainId, abi.encodePacked(address(hgtRemote), address(hgt)));
-        hgtRemote.setTrustedRemote(baseChainId, abi.encodePacked(address(hgt), address(hgtRemote)));
+        hgt.setTrustedRemote(otherChainId, abi.encodePacked(address(lzClient), address(hgt)));
+        lzClient.setTrustedRemote(baseChainId, abi.encodePacked(address(hgt), address(lzClient)));
         vm.stopPrank();
 
         // fund HGT with gas token

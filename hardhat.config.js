@@ -60,19 +60,22 @@ module.exports = {
             accounts: [ PRIVATE_KEY, process.env.PRIVATE_KEY_MAKER || PRIVATE_KEY, process.env.PRIVATE_KEY_TAKER || PRIVATE_KEY ]
         },
         fuji: {
-            url: 'https://internal-hubblenet-rpc.hubble.exchange/ext/bc/2ErDhAugYgUSwpeejAsCBcHY4MzLYZ5Y13nDuNRtrSWjQN5SDM/rpc', // changes on every fresh run
-            chainId: 321123,
+            url: 'https://api.avax-test.network/ext/bc/C/rpc',
+            chainId: 43113,
             throwOnTransactionFailures: true,
-            gasLimit: 5000000,
-            accounts: {
-                mnemonic: "test test test test test test test test test test test junk"
-            }
+            gasLimit: 6000000,
+            accounts: [ PRIVATE_KEY ]
         },
         cchain: {
             url: 'https://api.avax.network/ext/bc/C/rpc',
             chainId: 43114,
             throwOnTransactionFailures: true,
             gasLimit: 6000000,
+            accounts: [ PRIVATE_KEY ]
+        },
+        arbGoerli: {
+            url: 'https://goerli-rollup.arbitrum.io/rpc',
+            chainId: 421613,
             accounts: [ PRIVATE_KEY ]
         }
     },

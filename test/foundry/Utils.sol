@@ -21,6 +21,7 @@ import "../../contracts/Registry.sol";
 import "../../contracts/HubbleViewer.sol";
 import "../../contracts/layer0/HGT.sol";
 import "../../contracts/layer0/HGTRemote.sol";
+import "../../contracts/layer0/LZClient.sol";
 import "../../contracts/tests/TestOracle.sol";
 import "../../contracts/tests/TestPriceFeed.sol";
 import "../../contracts/tests/ERC20Mintable.sol";
@@ -59,6 +60,7 @@ abstract contract Utils is Test {
     LZEndpointMock public lzEndpointOther;
     HGT public hgt;
     HGTRemote public hgtRemote;
+    LZClient public lzClient;
     int public MAX_LEVERAGE = 5;
     int public MIN_SIZE = 1e17; // 0.1
 
@@ -127,7 +129,7 @@ abstract contract Utils is Test {
         );
         hgt = HGT(payable(address(proxy)));
 
-        HGTRemote hgtRemoteImpl = new HGTRemote(address(lzEndpointOther));
+        HGTRemote hgtRemoteImpl = new HGTRemote();
         proxy = new TransparentUpgradeableProxy(
             address(hgtRemoteImpl),
             address(proxyAdmin),
@@ -135,8 +137,7 @@ abstract contract Utils is Test {
                 HGTRemote.initialize.selector,
                 governance,
                 address(0), // stargate router
-                baseChainId,
-                HGTRemote.SupportedToken({
+                IHGTRemote.SupportedToken({
                     token: address(usdc),
                     priceFeed: address(testPriceFeed), // price feed
                     collectedFee: 0,
@@ -147,6 +148,8 @@ abstract contract Utils is Test {
             )
         );
         hgtRemote = HGTRemote(payable(address(proxy)));
+
+        lzClient = new LZClient(address(lzEndpointOther), address(hgtRemote), baseChainId, governance);
 
         TestOracle oracleImpl = new TestOracle();
         proxy = new TransparentUpgradeableProxy(
@@ -228,6 +231,7 @@ abstract contract Utils is Test {
         orderBook.setOrderHandler(1, address(iocOrderBook));
         clearingHouse.setBibliophile(address(bibliophile));
         marginAccount.setBibliophile(address(bibliophile));
+        hgtRemote.setLZClient(address(lzClient));
         vm.stopPrank();
 
         wavax = setupRestrictedTestToken('Hubble Avax', 'hWAVAX', 18);

@@ -10,6 +10,7 @@ const { constants: { _1e6, _1e12, _1e18, ZERO } } = utils
 
 const {
     setupAvaxContracts,
+    buildWithdrawPayload,
     hubbleChainId,
     cchainId,
     ZERO_ADDRESS,
@@ -34,7 +35,7 @@ describe('Multi-chain Withdrawals', async function () {
             ;({ marginAccountHelper, proxyAdmin } = await utils.setupContracts({ mockOrderBook: false, testClearingHouse: false }))
             // deploy bridge contracts
             contracts = await setupAvaxContracts(proxyAdmin.address, marginAccountHelper.address)
-            ;({ usdcAvaxInstance, hgtRemote, hgt, avaxPriceFeed, lzEndpointMockRemote, lzEndpointMockBase, usdcPriceFeed } = contracts)
+            ;({ usdcAvaxInstance, hgtRemote, hgt, lzClient, avaxPriceFeed, lzEndpointMockRemote, lzEndpointMockBase, usdcPriceFeed } = contracts)
 
             ;([stargateRouter, stargateBridge, stargateUSDCPool ] = await Promise.all([
                 ethers.getContractAt('IStargateRouter', AvaxStargateRouter),
@@ -84,7 +85,7 @@ describe('Multi-chain Withdrawals', async function () {
                 params: [],
             });
         })
-       
+
         // withdraw hubbleNet -> cchain -> stargate
         it('Withdraw using l0 and stargate', async () => {
             // bob withdraws funds
@@ -133,7 +134,7 @@ describe('Multi-chain Withdrawals', async function () {
                 hgt.connect(bob).withdraw(withdrawVars, { value: withdrawAmount })
             )
                 .to.emit(hgt, 'SendToChain').withArgs(cchainId, bob._address, alice, 0, withdrawVars.amount.div(_1e12), 1)
-                .to.emit(hgtRemote, 'ReceiveFromHubbleNet').withArgs(hubbleChainId, alice, withdrawVars.amount.div(_1e12), true, 1)
+                .to.emit(hgtRemote, 'ReceiveFromHubbleNet').withArgs(hubbleChainId, alice, withdrawVars.amount.div(_1e12), 1)
                 .to.emit(stargateBridge, 'SendMsg')
                 .to.emit(stargateUSDCPool, 'Swap')
                 .to.emit(stargateUSDCPool, 'SendCredits')
@@ -168,10 +169,11 @@ describe('Multi-chain Withdrawals', async function () {
             await hgtRemote.connect(usdcWhale).deposit(depositVars, { value: l0Fee[0] })
             await utils.stopImpersonateAccount(usdcWhale._address)
             hgtRemoteUSDCBalance = await usdcAvaxInstance.balanceOf(hgtRemote.address)
+            hgtBalance = await ethers.provider.getBalance(hgt.address)
 
             // withdraw half of the funds
             withdrawAmount = depositAmount.mul(_1e12).div(2) // scale to 18 decimals
-            const withdrawVars = {
+            withdrawVars = {
                 dstChainId: cchainId,
                 secondHopChainId: lzChainIdForEthMainnet,
                 dstPoolId: srcPoolIdForUSDCMainnet,
@@ -184,25 +186,46 @@ describe('Multi-chain Withdrawals', async function () {
                 adapterParams
             }
 
-            await utils.impersonateAccount(bob._address)
             l0Fee = await hgt.estimateSendFee(withdrawVars)
-            await expect(
-                hgt.connect(bob).withdraw(withdrawVars, { value: withdrawAmount.add(l0Fee[0]) })
-            )
-            .to.emit(hgt, 'SendToChain').withArgs(cchainId, bob._address, alice, 0, withdrawAmount.div(_1e12), 2)
-            .to.emit(hgtRemote, 'ReceiveFromHubbleNet').withArgs(hubbleChainId, alice, withdrawAmount.div(_1e12), false, 2)
-            .to.emit(hgtRemote, 'WithdrawSecondHopFailure').withArgs(lzChainIdForEthMainnet, 2, alice, usdcAvaxInstance.address, withdrawAmount.div(_1e12))
+            let tx = await hgt.connect(bob).withdraw(withdrawVars, { value: withdrawAmount.add(l0Fee[0]) })
 
-            expect(await hgtRemote.rescueFunds(usdcAvaxInstance.address, alice)).to.eq(withdrawAmount.div(_1e12))
+            withdrawVars.amount = withdrawAmount.div(_1e12)
+            lzPayload = buildWithdrawPayload(withdrawVars)
+            srcAddress = ethers.utils.solidityPack(['address', 'address'], [hgt.address, lzClient.address])
+            const reason = "0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000001b53746172676174653a20736c69707061676520746f6f20686967680000000000" // Stargate: slippage too high. Converted to hex byes with some extra data and padding (returned by excessivelySafeCall lib)
+
+            await expect(tx).to.emit(hgt, 'SendToChain').withArgs(cchainId, bob._address, alice, 0, withdrawAmount.div(_1e12), 2)
+            .to.emit(lzClient, 'MessageFailed').withArgs(hubbleChainId, srcAddress, 2, lzPayload, reason)
+
+            const storedPayloadHash = await lzClient.failedMessages(hubbleChainId, srcAddress, 2)
+            expect(storedPayloadHash).to.eq(ethers.utils.keccak256(lzPayload))
             expect(await usdcAvaxInstance.balanceOf(hgtRemote.address)).to.eq(hgtRemoteUSDCBalance) // no change
             expect(await usdcAvaxInstance.balanceOf(alice)).to.eq(ZERO)
+            expect(await ethers.provider.getBalance(hgt.address)).to.eq(hgtBalance.add(withdrawAmount))
         })
 
         it('rescue funds from failed withdraw', async () => {
-            const rescueAmount = withdrawAmount.div(_1e12)
-            await hgtRemote.connect(signers[1]).rescueMyFunds(usdcAvaxInstance.address, rescueAmount)
-            expect(await usdcAvaxInstance.balanceOf(alice)).to.eq(rescueAmount)
-            expect(await usdcAvaxInstance.balanceOf(hgtRemote.address)).to.eq(hgtRemoteUSDCBalance.sub(rescueAmount))
+            // retry message fails
+            await expect(lzClient.retryMessage(hubbleChainId, srcAddress, 2, lzPayload)
+            ).to.be.revertedWith('Stargate: slippage too high')
+
+            // reverts if sender is not receiver
+            await expect(hgtRemote.rescueWithdrawFunds(hubbleChainId, srcAddress, 2, lzPayload)
+            ).to.be.revertedWith('HGTRemote: sender must be receiver')
+
+            alice = signers[1]
+            // reverts if no funds to rescue
+            await expect(hgtRemote.connect(alice).rescueWithdrawFunds(hubbleChainId, srcAddress, 3, lzPayload)
+            ).to.be.revertedWith('LZClient: no stored message')
+
+            // revert if wrong payload
+            await expect(hgtRemote.connect(alice).rescueWithdrawFunds(hubbleChainId, srcAddress, 2, lzPayload + '00')
+            ).to.be.revertedWith('LZClient: invalid payload')
+
+            // rescue funds
+            await hgtRemote.connect(alice).rescueWithdrawFunds(hubbleChainId, srcAddress, 2, lzPayload)
+            expect(await usdcAvaxInstance.balanceOf(alice.address)).to.eq(withdrawVars.amount)
+            expect(await usdcAvaxInstance.balanceOf(hgtRemote.address)).to.eq(hgtRemoteUSDCBalance.sub(withdrawVars.amount))
         })
     })
 })
