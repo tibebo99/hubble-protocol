@@ -55,7 +55,7 @@ describe('Oracle Unit Tests', function() {
 
         const Oracle = await ethers.getContractFactory('NewOracle')
         oracle = await Oracle.deploy()
-        await oracle.setAggregator(wavax, avaxUsdAggregator)
+        await oracle.setAggregator(wavax, avaxUsdAggregator, 120 /* 2 minutes */)
     })
 
     it('get underlying Twap Price', async function () {

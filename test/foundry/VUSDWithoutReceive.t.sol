@@ -4,7 +4,7 @@ pragma solidity 0.8.9;
 import "./Utils.sol";
 
 contract VUSDWithoutReceiveTest is Utils {
-    event WithdrawalFailed(address indexed trader, uint amount, bytes data);
+    event WithdrawalFailed(address indexed trader, uint amount);
 
     function setUp() public {
         setupContracts();
@@ -25,17 +25,26 @@ contract VUSDWithoutReceiveTest is Utils {
         vm.prank(bob);
         husd.withdraw(amount);
 
+        assertEq(husd.balanceOf(address(this)), 0);
         assertEq(husd.withdrawalQLength(), 3);
         assertEq(husd.start(), 0);
 
         uint scaledAmount = uint(amount) * 1e12;
         vm.expectEmit(true, false, false, true, address(husd));
-        emit WithdrawalFailed(address(this), scaledAmount, '');
+        emit WithdrawalFailed(address(this), scaledAmount);
         husd.processWithdrawals();
 
         assertEq(husd.withdrawalQLength(), 3);
         assertEq(husd.start(), 3);
         assertEq(alice.balance, scaledAmount);
         assertEq(bob.balance, scaledAmount);
+        assertEq(husd.balanceOf(address(this)), 0);
+        assertEq(husd.failedWithdrawals(address(this)), scaledAmount);
+
+        // rescue failed withdrawal fail because of no receive
+        vm.expectRevert('VUSD: Rescue failed');
+        husd.rescueFailedWithdrawal(address(this));
+        assertEq(husd.balanceOf(address(this)), 0);
+        assertEq(husd.failedWithdrawals(address(this)), scaledAmount);
     }
 }

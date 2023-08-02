@@ -13,7 +13,12 @@ contract NewOracle is IOracle, VanillaGovernable {
     using SafeCast for uint256;
     using SafeCast for int256;
 
-    mapping(address => address) public chainLinkAggregatorMap;
+    struct ChainlinkAggregator {
+        address aggregator;
+        uint256 heartbeat; // max threshold for the aggregator to be considered stale
+    }
+
+    mapping(address => ChainlinkAggregator) public chainLinkAggregatorMap;
     mapping(address => int256) public stablePrice;
 
     constructor() {
@@ -29,8 +34,10 @@ contract NewOracle is IOracle, VanillaGovernable {
         if (stablePrice[underlying] != 0) {
             return stablePrice[underlying];
         }
-        (,answer,,,) = AggregatorV3Interface(chainLinkAggregatorMap[underlying]).latestRoundData();
+        uint updatedAt;
+        (,answer,, updatedAt,) = AggregatorV3Interface(chainLinkAggregatorMap[underlying].aggregator).latestRoundData();
         require(answer > 0, "Oracle.getUnderlyingPrice.non_positive");
+        require(_blockTimestamp() - updatedAt <= chainLinkAggregatorMap[underlying].heartbeat, "Oracle.getUnderlyingPrice.stale");
         answer /= 100;
     }
 
@@ -43,7 +50,7 @@ contract NewOracle is IOracle, VanillaGovernable {
         if (stablePrice[underlying] != 0) {
             return stablePrice[underlying];
         }
-        AggregatorV3Interface aggregator = AggregatorV3Interface(chainLinkAggregatorMap[underlying]);
+        AggregatorV3Interface aggregator = AggregatorV3Interface(chainLinkAggregatorMap[underlying].aggregator);
         requireNonEmptyAddress(address(aggregator));
         require(intervalInSeconds != 0, "interval can't be 0");
 
@@ -61,7 +68,7 @@ contract NewOracle is IOracle, VanillaGovernable {
         //  --+------+-----+-----+-----+-----+-----+
         //         base           current previous now
 
-        (uint80 round, uint256 latestPrice, uint256 latestTimestamp) = getLatestRoundData(aggregator);
+        (uint80 round, uint256 latestPrice, uint256 latestTimestamp) = getLatestRoundData(aggregator, underlying);
         // if latest updated timestamp is earlier than target timestamp, return the latest price.
         if (latestTimestamp <= periodStart || round == 0) {
             return _formatPrice(latestPrice);
@@ -110,7 +117,7 @@ contract NewOracle is IOracle, VanillaGovernable {
     // INTERNAL VIEW FUNCTIONS
     //
 
-    function getLatestRoundData(AggregatorV3Interface _aggregator)
+    function getLatestRoundData(AggregatorV3Interface _aggregator, address underlying)
         internal
         view
         returns (
@@ -120,6 +127,7 @@ contract NewOracle is IOracle, VanillaGovernable {
         )
     {
         (uint80 round, int256 latestPrice, , uint256 latestTimestamp, ) = _aggregator.latestRoundData();
+        require(_blockTimestamp() - latestTimestamp <= chainLinkAggregatorMap[underlying].heartbeat, "Oracle.getLatestRoundData.stale");
         finalPrice = uint256(latestPrice);
         if (latestPrice <= 0) {
             requireEnoughHistory(round);
@@ -166,12 +174,12 @@ contract NewOracle is IOracle, VanillaGovernable {
 
     // Governance
 
-    function setAggregator(address underlying, address aggregator) external onlyGovernance {
+    function setAggregator(address underlying, address aggregator, uint hearbeat) external onlyGovernance {
         requireNonEmptyAddress(underlying);
         requireNonEmptyAddress(aggregator);
         // oracle answer should be in 8 decimals
         require(AggregatorV3Interface(aggregator).decimals() == 8, 'Expected oracle to have 8 decimals');
-        chainLinkAggregatorMap[underlying] = aggregator;
+        chainLinkAggregatorMap[underlying] = ChainlinkAggregator(aggregator, hearbeat);
         // AggregatorV3Interface(chainLinkAggregatorMap[underlying]).latestRoundData(); // sanity check
     }
 
@@ -182,7 +190,7 @@ contract NewOracle is IOracle, VanillaGovernable {
     function setStablePrice(address underlying, uint256 price) external onlyGovernance {
         requireNonEmptyAddress(underlying);
         if (price == 0) {
-            requireNonEmptyAddress(chainLinkAggregatorMap[underlying]);
+            requireNonEmptyAddress(chainLinkAggregatorMap[underlying].aggregator);
         }
         stablePrice[underlying] = price.toInt256();
     }

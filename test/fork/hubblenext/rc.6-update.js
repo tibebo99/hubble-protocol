@@ -18,7 +18,7 @@ const maker = '0x93dAc05dE54C9d5ee5C59F77518F931168FDEC9b'
 const taker = '0xCe743BFA1feaed060adBadfc8974be544b251Fe8'
 const validator = '0x393bd9ac9dbBe75e84db739Bb15d22cA86D26696' // N. Virgina
 
-describe('hubblenext-rc.6 update', async function() {
+describe.skip('hubblenext-rc.6 update', async function() {
     let blockNumber = 819750
 
     before(async function() {

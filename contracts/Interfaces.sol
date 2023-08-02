@@ -262,7 +262,7 @@ interface IERC20FlexibleSupply is IERC20 {
 }
 
 interface IVUSD {
-    event WithdrawalFailed(address indexed trader, uint amount, bytes data);
+    event WithdrawalFailed(address indexed trader, uint amount);
 
     function mintWithReserve(address to, uint amount) external payable;
     function withdraw(uint amount) external;

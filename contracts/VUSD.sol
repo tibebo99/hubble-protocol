@@ -27,12 +27,19 @@ contract VUSD is ERC20PresetMinterPauserUpgradeable, ReentrancyGuard, IVUSD {
     /// @dev Constrained by block gas limit
     uint public maxWithdrawalProcesses;
 
-    uint256[50] private __gap;
+    /// @dev Max amount of gas to be used in .call() for withdrawals
+    uint public maxGas;
+
+    /// @dev in case of withdrawal failure, keeps track of failed withdrawals
+    mapping(address => uint256) public failedWithdrawals;
+
+    uint256[48] private __gap;
 
     function initialize(string memory name, string memory symbol) public override virtual {
         super.initialize(name, symbol); // has initializer modifier
         _revokeRole(MINTER_ROLE, _msgSender()); // __ERC20PresetMinterPauser_init_unchained grants this but is not required
         maxWithdrawalProcesses = 100;
+        maxGas = 3000;
     }
 
     /**
@@ -42,12 +49,12 @@ contract VUSD is ERC20PresetMinterPauserUpgradeable, ReentrancyGuard, IVUSD {
     * @param amount amount to mint - precision 1e6
     * msg.value has to be exactly 1e12 times `amount`
     */
-    function mintWithReserve(address to, uint amount) external override payable whenNotPaused {
+    function mintWithReserve(address to, uint amount) external override payable whenNotPaused nonReentrant {
         require(msg.value == amount * SCALING_FACTOR, "vUSD: Insufficient amount transferred");
         _mint(to, amount);
     }
 
-    function withdraw(uint amount) external override whenNotPaused {
+    function withdraw(uint amount) external override whenNotPaused nonReentrant {
         _withdrawTo(_msgSender(), amount);
     }
 
@@ -55,7 +62,7 @@ contract VUSD is ERC20PresetMinterPauserUpgradeable, ReentrancyGuard, IVUSD {
     * @notice Burn vusd from msg.sender and Q the withdrawal to `to`
     * @dev no need to add onlyMarginAccountHelper modifier as vusd is burned from caller and sent to specified address
     */
-    function withdrawTo(address to, uint amount) external override whenNotPaused {
+    function withdrawTo(address to, uint amount) external override whenNotPaused nonReentrant {
         _withdrawTo(to, amount);
     }
 
@@ -71,17 +78,32 @@ contract VUSD is ERC20PresetMinterPauserUpgradeable, ReentrancyGuard, IVUSD {
             if (reserve < withdrawal.amount) {
                 break;
             }
+            i += 1;
 
-            (bool success, bytes memory data) = withdrawal.usr.call{value: withdrawal.amount}("");
+            (bool success, ) = withdrawal.usr.call{value: withdrawal.amount, gas: maxGas}("");
             if (success) {
                 reserve -= withdrawal.amount;
             } else {
-                emit WithdrawalFailed(withdrawal.usr, withdrawal.amount, data);
+                failedWithdrawals[withdrawal.usr] += withdrawal.amount;
+                emit WithdrawalFailed(withdrawal.usr, withdrawal.amount);
             }
-            i += 1;
         }
         // re-entracy not possible, hence can update `start` at the end
         start = i;
+    }
+
+    /**
+     * @notice Rescue failed withdrawal.
+    */
+    function rescueFailedWithdrawal(address user) external nonReentrant {
+        require(hasRole(DEFAULT_ADMIN_ROLE, _msgSender()), "VUSD: must have admin role");
+        uint amount = failedWithdrawals[user];
+        require(amount > 0, "VUSD: No failed withdrawal");
+        require(address(this).balance >= amount, "VUSD: Insufficient reserve");
+
+        failedWithdrawals[user] = 0;
+        (bool success, ) = user.call{value: amount, gas: maxGas}("");
+        require(success, "VUSD: Rescue failed");
     }
 
     function withdrawalQueue() external view returns(Withdrawal[] memory queue) {
@@ -104,6 +126,11 @@ contract VUSD is ERC20PresetMinterPauserUpgradeable, ReentrancyGuard, IVUSD {
     function setMaxWithdrawalProcesses(uint _maxWithdrawalProcesses) external {
         require(hasRole(DEFAULT_ADMIN_ROLE, _msgSender()), "ERC20PresetMinterPauser: must have admin role");
         maxWithdrawalProcesses = _maxWithdrawalProcesses;
+    }
+
+    function setMaxGas(uint _maxGas) external {
+        require(hasRole(DEFAULT_ADMIN_ROLE, _msgSender()), "ERC20PresetMinterPauser: must have admin role");
+        maxGas = _maxGas;
     }
 
     function _withdrawTo(address to, uint amount) internal {
