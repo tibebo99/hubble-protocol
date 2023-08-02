@@ -374,7 +374,33 @@ async function rc6Update() {
     await logStatus(tasks)
 }
 
-rc6Update()
+// 2.0.0-next.rc.7 update (cancelOrdersAtomic)
+async function rc7Update() {
+    await initializeTxOptionsFor0thSigner()
+
+    const ClearingHouse = await ethers.getContractFactory('ClearingHouse')
+    const newClearingHouse = await ClearingHouse.deploy(getTxOptions())
+    console.log({ newClearingHouse: newClearingHouse.address }) // 0x4bbc4a4A38326aD0aE01C1cF7e936Ba3d0AeCeF4
+
+    const MarginAccount = await ethers.getContractFactory('MarginAccount')
+    const newMarginAccount = await MarginAccount.deploy(config.Forwarder, getTxOptions())
+    console.log({ newMarginAccount: newMarginAccount.address }) // 0x634d1b90C25776482c28Af1Ff3edcB9D883090Ed
+
+    const OrderBook = await ethers.getContractFactory('OrderBook')
+    const newOrderBook = await OrderBook.deploy(config.ClearingHouse, config.MarginAccount, getTxOptions())
+    console.log({ newOrderBook: newOrderBook.address }) // 0xC82ce8E2dfA142ff090bCbD6518F97E7b2f16024
+
+    // Phase 2
+    await sleep(5)
+    const proxyAdmin = await ethers.getContractAt('ProxyAdmin', config.proxyAdmin)
+    const tasks = []
+    tasks.push(proxyAdmin.upgrade(config.ClearingHouse, newClearingHouse.address, getTxOptions()))
+    tasks.push(proxyAdmin.upgrade(config.MarginAccount, newMarginAccount.address, getTxOptions()))
+    tasks.push(proxyAdmin.upgrade(config.OrderBook, newOrderBook.address, getTxOptions()))
+    await logStatus(tasks)
+}
+
+rc7Update()
 .then(() => process.exit(0))
 .catch(error => {
     console.error(error);

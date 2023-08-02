@@ -391,7 +391,6 @@ contract OrderBookTests is Utils {
             assertAvailableMargin(alice, 0, int(totalReservedMargin - reservedMarginForOrder1), utilizedMargin);
         }
 
-        // vm.expectRevert('OB_available_margin_not_negative');
         vm.expectEmit(true, true, false, true, address(orderBook));
         emit SkippedCancelOrder(order2.trader, orderBook.getOrderHash(order2), block.timestamp);
         orderBook.cancelOrder(order2);
@@ -410,7 +409,7 @@ contract OrderBookTests is Utils {
         IOrderBook.Order[] memory _orders = new IOrderBook.Order[](1);
         _orders[0] = order2;
         vm.expectRevert('OB_Order_does_not_exist');
-        orderBook.cancelOrdersNoisy(_orders);
+        orderBook.cancelOrdersAtomic(_orders);
         vm.stopPrank();
     }
 

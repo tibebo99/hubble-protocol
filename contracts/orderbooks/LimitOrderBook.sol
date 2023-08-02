@@ -70,7 +70,7 @@ interface ILimitOrderBook is IOrderHandler {
      * Even a validator is allowed to cancel certain orders on the trader's behalf. This happens when there is not sufficient margin to execute the order.
      * @dev Even if one order fails to be cancelled for whatever reason, entire tx will revert and all other orders will also fail to be cancelled.
     */
-    function cancelOrdersNoisy(Order[] memory orders) external;
+    function cancelOrdersAtomic(Order[] memory orders) external;
 
     /**
      * @notice Cancel an order
@@ -258,7 +258,7 @@ contract LimitOrderBook is ILimitOrderBook, VanillaGovernable, Pausable, EIP712U
      /**
      * @inheritdoc ILimitOrderBook
     */
-    function cancelOrdersNoisy(Order[] memory orders) override external {
+    function cancelOrdersAtomic(Order[] memory orders) override external {
         assertTradingAuthority(orders[0].trader, _msgSender());
         _cancelOrders(orders, false, true);
     }

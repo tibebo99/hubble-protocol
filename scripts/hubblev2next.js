@@ -16,6 +16,7 @@ const hubblev2next = {
         "HubbleReferral": "0x231255A3dB7800Dc9c2Ed1Dc9e2ED6e8d5516091",
         "vusd": "0xDDFC033DAd5F2Cc52e126B537f39eD6b70372ec6",
         "FeeSink": "0x8E3fD03Dac5A62c2991E3c09B242F9ea5f6D1E9C",
+        "Forwarder": "0xF0978c72F6BfFac051735b0F01e63c55F7aE02d3",
         "amms": [
             {
                 perp: "ETH-Perp",
