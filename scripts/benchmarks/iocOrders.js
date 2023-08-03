@@ -125,7 +125,7 @@ async function placeIOCOrder() {
     // }
     // await setupAMM(ammOptions)
     const tx = await exchange.placeIOCOrder(alice, false, marketId, 1, 10)
-    // console.log(await tx.wait())
+    console.log(await tx.wait())
 }
 
 const exchange = new Exchange(ethers.provider, { contracts: config })
@@ -238,7 +238,22 @@ async function doTrades(marketId, longPrice, shortPrice, matchPrice, longFirst) 
 }
 
 async function juror() {
-    console.log(await exchange.iocOrderBook.juror())
+    // console.log(await exchange.iocOrderBook.juror())
+    // console.log(await exchange.iocOrderBook.expirationCap())
+    const trader = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
+    const orders = [
+        {
+            orderType: 1,
+            ammIndex: 2,
+            trader,
+            baseAssetQuantity: utils.BigNumber.from('1000000000000000000'),
+            price: utils.BigNumber.from('30000000'),
+            salt: utils.BigNumber.from('52083281634683060362497421357585753067'),
+            reduceOnly: false,
+            expireAt: Math.floor(Date.now() / 1000) + 3,
+        }
+    ]
+    console.log(await exchange.juror.validatePlaceIOCOrders(orders, trader))
 }
 
 

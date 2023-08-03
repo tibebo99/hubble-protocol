@@ -69,7 +69,7 @@ contract ImmediateOrCancelOrders is IImmediateOrCancelOrders, VanillaGovernable,
         _setGovernace(_governance);
         defaultOrderBook = _defaultOrderBook;
         juror = IJuror(_juror);
-        expirationCap = 5; // seconds
+        expirationCap = 20; // seconds
     }
 
     /**

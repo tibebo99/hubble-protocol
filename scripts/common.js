@@ -11,7 +11,7 @@ const config = {
     ClearingHouse: '0x0300000000000000000000000000000000000002',
     Bibliophile: '0x0300000000000000000000000000000000000004',
     Juror: '0x0300000000000000000000000000000000000005',
-    IocOrderBook: '0x0300000000000000000000000000000000000006' // on local, not on hubblenext
+    IocOrderBook: '0x635c5F96989a4226953FE6361f12B96c5d50289b' // on local, not on hubblenext
 }
 
 async function deployToken(name, symbol, decimals) {

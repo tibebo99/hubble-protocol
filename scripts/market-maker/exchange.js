@@ -154,7 +154,7 @@ class Exchange {
     buildIOCOrderObj(trader, ammIndex, baseAssetQuantity, price, reduceOnly=false) {
         return {
             orderType: 1,
-            // expireAt: Math.floor(Date.now() / 1000) + 3,
+            expireAt: Math.floor(Date.now() / 1000) + 3,
             ammIndex,
             trader,
             baseAssetQuantity: ethers.utils.parseEther(baseAssetQuantity.toString()),
@@ -164,11 +164,13 @@ class Exchange {
         }
     }
 
-    async placeIOCOrder(signer, dryRun, market, baseAssetQuantity, price, reduceOnly=false) {
+    async placeIOCOrder(signer, dryRun, market, baseAssetQuantity, price, reduceOnly=false, txOpts = {}) {
         console.log(`Executing IOC ${baseAssetQuantity > 0 ? 'long' : 'short'} ${baseAssetQuantity} at $${price}`)
+        // console.log({ signer: signer.address, dryRun, market, baseAssetQuantity, price, reduceOnly, txOpts })
         if (dryRun || !baseAssetQuantity) return
-        const order = buildIOCOrderObj(signer.address, market, baseAssetQuantity, price, reduceOnly)
-        return this.placeIOCOrders(signer, [order], txOpts)
+        const order = this.buildIOCOrderObj(signer.address, market, baseAssetQuantity, price, reduceOnly)
+        const [ tx ] = await this.placeIOCOrders(signer, [order], txOpts.nonce)
+        return tx
     }
 
     // estimateGas will fail if there wasn't a block produced in the last 1-2 seconds. Hence sending in a gasLimit by default
@@ -185,6 +187,10 @@ class Exchange {
         orders = orders.map(order => Object.assign(order, { expireAt }))
         const chunks = _.chunk(orders, chunkSize)
         if (nonce == null) nonce = await signer.getTransactionCount()
+        // console.log(chunks[0], { nonce })
+        // return this.iocOrderBook.connect(signer).placeOrders(chunks[0])
+        // return this.iocOrderBook.connect(signer).placeOrders(chunks[0], { gasLimit: 1e6, nonce: nonce++ })
+        // console.log('estimateGas', await this.iocOrderBook.connect(signer).estimateGas.placeOrders(chunks[0]))
         return Promise.all(chunks.map(chunk => this.iocOrderBook.connect(signer).placeOrders(chunk, { gasLimit: chunk.length * 1e6, nonce: nonce++ })))
     }
 

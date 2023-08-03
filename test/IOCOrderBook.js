@@ -71,6 +71,6 @@ describe('IOC Order Book', function () {
             iocOrderBook.address,
             BigNumber.from(ethers.utils.solidityPack(['uint256'], [EXPIRATION_CAP_SLOT]))
         )
-        expect(BigNumber.from(storage)).to.eq(5)
+        expect(BigNumber.from(storage)).to.eq(20)
     })
 })

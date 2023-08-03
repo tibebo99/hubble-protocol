@@ -250,9 +250,10 @@ contract LimitOrderBook is ILimitOrderBook, VanillaGovernable, Pausable, EIP712U
         address sender = _msgSender();
         if (trader != sender && !isTradingAuthority[trader][sender]) {
             require(isValidator[sender], "OB_invalid_sender");
-            return _cancelOrders(orders, true, false);
+            _cancelOrders(orders, true, false);
+        } else {
+            _cancelOrders(orders, false, false);
         }
-        _cancelOrders(orders, false, false);
     }
 
      /**
