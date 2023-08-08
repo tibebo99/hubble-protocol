@@ -467,7 +467,24 @@ async function setTrustedRemote() {
     )
 }
 
-rc8_2Update()
+async function feeConfig() {
+    const feeConfig = await ethers.getContractAt('IFeeManager', '0x0200000000000000000000000000000000000003')
+    const config = await feeConfig.getFeeConfig()
+    console.log(config)
+    await feeConfig.setFeeConfig(
+        config.gasLimit,
+        config.targetBlockRate,
+        config.minBaseFee,
+        config.targetGas,
+        config.baseFeeChangeDenominator,
+        config.minBlockGasCost,
+        config.maxBlockGasCost,
+        0
+    )
+    console.log(config)
+}
+
+feeConfig()
 .then(() => process.exit(0))
 .catch(error => {
     console.error(error);

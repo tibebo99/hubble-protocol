@@ -5,7 +5,7 @@ const { constants: { _1e6, _1e18 }, bnToFloat } = require('../../test/utils');
 const config = require('../hubblev2next')
 const { marketInfo } = config
 
-const updateFrequency = 10e3 // 1s
+const updateFrequency = 2e3 // 1s
 const dryRun = false
 const numOrders = 15;
 

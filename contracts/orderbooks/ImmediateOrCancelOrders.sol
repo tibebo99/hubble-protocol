@@ -30,7 +30,6 @@ interface IImmediateOrCancelOrders is IOrderHandler {
     }
 
     event OrderPlaced(address indexed trader, bytes32 indexed orderHash, Order order, uint timestamp);
-    event OrderCancelled(address indexed trader, bytes32 indexed orderHash, uint timestamp);
 
     /**
      * @notice Send signed orders as part of this tx. Even a relayer can use this method to aggregate and send orders for a large number of users

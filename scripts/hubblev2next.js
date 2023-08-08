@@ -295,7 +295,7 @@ const hubblev2next = {
             active: true,
             name: 'JOE-Perp',
             initialRate: 0.42,
-            x: 0.05, // operate +- 1% of index price
+            x: 0.01, // operate +- 1% of index price
             spread: 0.001, // $2
             toFixed: 1,
             minOrderSize: 0.1,

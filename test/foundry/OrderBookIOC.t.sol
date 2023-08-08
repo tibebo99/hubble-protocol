@@ -295,7 +295,7 @@ contract OrderBookIOCTests is Utils {
         orderBook.executeMatchedOrders([encodeIOCOrder(orders[0]), encodeIOCOrder(orders[1])], 0);
 
         // revert if IOC order expired
-        vm.warp(block.timestamp + 6);
+        vm.warp(block.timestamp + 21);
         vm.expectRevert("ioc expired");
         orderBook.executeMatchedOrders([encodeIOCOrder(orders[0]), encodeIOCOrder(orders[1])], size);
 

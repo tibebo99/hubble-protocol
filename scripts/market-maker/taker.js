@@ -7,7 +7,7 @@ const hubblev2next = require('../hubblev2next');
 let { marketInfo } = hubblev2next
 // marketInfo = marketInfo.slice(0, 1)
 
-const updateFrequency = 10e3 // 1s
+const updateFrequency = 1e3 // 1s
 const dryRun = false
 
 const provider = new ethers.providers.JsonRpcProvider(process.env.RPC_URL)
